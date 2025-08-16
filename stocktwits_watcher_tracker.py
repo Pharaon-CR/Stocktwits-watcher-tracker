@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Stocktwits Watchlist Tracker
+Stocktwits Watchlist Tracker (Anti-bot Optimized)
 
 INSTRUCTIONS:
 -------------
@@ -12,14 +12,14 @@ INSTRUCTIONS:
     IOBT
     BTAI
 
-- Run this script to fetch the current 'watchlist_count' for each symbol from Stocktwits, and append results to 'stocktwits_watchers.csv'.
-- The CSV will be created with columns: date, symbol, watchers, if it doesn't exist.
-- You can update 'symbols.txt' at any time to track different symbols; the script adapts automatically.
+- Run this script weekly via GitHub Actions or locally. Results are appended to 'stocktwits_watchers.csv'.
+- All symbols are processed in a single run; the CSV is updated only once per run.
+- The script randomizes requests and User-Agents to bypass anti-bot protections as much as possible.
 
 REQUIREMENTS:
 -------------
 - Python 3.x
-- Standard libraries only: requests, csv, datetime, os, time
+- Standard libraries only: requests, csv, datetime, os, time, random
 
 USAGE:
 ------
@@ -30,27 +30,39 @@ import os
 import csv
 import requests
 import time
+import random
 from datetime import datetime
 
-# Editable configuration
 SYMBOLS_FILE = "symbols.txt"
 CSV_FILE = "stocktwits_watchers.csv"
 API_URL_TEMPLATE = "https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
-MAX_RETRIES = 5
-RETRY_WAIT = 15  # seconds to wait on rate-limit or server error
+MAX_RETRIES = 6  # will use exponential backoff
+MIN_SLEEP = 2
+MAX_SLEEP = 6
 
-# Headers to mimic a real browser (helps bypass basic anti-bot checks)
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/115.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://stocktwits.com/",
-    "Connection": "keep-alive",
-}
+# List of real browser User-Agents to rotate (add more as needed)
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/116.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+]
+
+def get_random_headers():
+    """Return randomized headers for each request."""
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://stocktwits.com/",
+        "Connection": "keep-alive",
+        "DNT": "1",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
 
 def read_symbols(symbols_file):
     """Read stock symbols from a file, ignoring comments and blank lines."""
@@ -66,42 +78,46 @@ def read_symbols(symbols_file):
             symbols.append(line.upper())
     return symbols
 
-def fetch_watchlist_count(symbol):
+def fetch_watchlist_count(session, symbol):
     """
-    Fetch the watchlist_count for a given symbol from Stocktwits API.
-    Handles rate limiting with retries.
-    Returns (watchlist_count, None) on success, (None, error_message) on failure.
+    Fetch the watchlist_count for a given symbol from Stocktwits API,
+    rotating User-Agent and using exponential backoff for retries.
     """
     url = API_URL_TEMPLATE.format(symbol=symbol)
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.get(url, timeout=10, headers=HEADERS)
-            if resp.status_code == 429:
+            headers = get_random_headers()
+            resp = session.get(url, timeout=10, headers=headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                count = data.get("symbol", {}).get("watchlist_count")
+                if count is None:
+                    return None, f"No 'watchlist_count' in response for {symbol}"
+                return count, None
+            elif resp.status_code == 429:
                 # Rate limited
-                print(f"Rate limited on {symbol}. Waiting {RETRY_WAIT} seconds and retrying ({attempt}/{MAX_RETRIES})...")
-                time.sleep(RETRY_WAIT)
+                wait = RETRY_WAIT = min(60, (2 ** attempt) + random.randint(0, 5))
+                print(f"Rate limited on {symbol}. Waiting {wait} seconds and retrying ({attempt}/{MAX_RETRIES})...")
+                time.sleep(wait)
                 continue
             elif resp.status_code == 403:
-                # Forbidden, possibly blocked by anti-bot
-                print(f"HTTP 403 Forbidden for {symbol}. Possible anti-bot block. Waiting {RETRY_WAIT} seconds and retrying ({attempt}/{MAX_RETRIES})...")
-                time.sleep(RETRY_WAIT)
+                # Forbidden, likely anti-bot; wait and retry
+                wait = RETRY_WAIT = min(90, (2 ** attempt) + random.randint(2, 10))
+                print(f"HTTP 403 Forbidden for {symbol}. Waiting {wait} seconds and retrying ({attempt}/{MAX_RETRIES})...")
+                time.sleep(wait)
                 continue
             elif resp.status_code >= 500:
-                # Server error
-                print(f"Server error for {symbol}. Waiting {RETRY_WAIT} seconds and retrying ({attempt}/{MAX_RETRIES})...")
-                time.sleep(RETRY_WAIT)
+                # Server error, try again soon
+                wait = 5 + random.randint(0, 5)
+                print(f"Server error {resp.status_code} for {symbol}. Waiting {wait} seconds and retrying ({attempt}/{MAX_RETRIES})...")
+                time.sleep(wait)
                 continue
-            elif resp.status_code != 200:
-                err = f"HTTP {resp.status_code} for {symbol}: {resp.text}"
-                return None, err
-            data = resp.json()
-            count = data.get("symbol", {}).get("watchlist_count")
-            if count is None:
-                return None, f"No 'watchlist_count' in response for {symbol}"
-            return count, None
+            else:
+                return None, f"HTTP {resp.status_code} for {symbol}: {resp.text}"
         except requests.RequestException as e:
-            print(f"Network error for {symbol}: {e}. Waiting {RETRY_WAIT} seconds and retrying ({attempt}/{MAX_RETRIES})...")
-            time.sleep(RETRY_WAIT)
+            wait = 5 + random.randint(0, 5)
+            print(f"Network error for {symbol}: {e}. Waiting {wait} seconds and retrying ({attempt}/{MAX_RETRIES})...")
+            time.sleep(wait)
     return None, f"Failed to fetch data for {symbol} after {MAX_RETRIES} attempts."
 
 def ensure_csv(csv_file):
@@ -111,31 +127,39 @@ def ensure_csv(csv_file):
             writer = csv.writer(f)
             writer.writerow(["date", "symbol", "watchers"])
 
-def append_to_csv(csv_file, date_str, symbol, watchers):
-    """Append a single row to the CSV file."""
+def append_many_to_csv(csv_file, rows):
+    """Append multiple rows to the CSV file in one operation."""
     with open(csv_file, "a", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([date_str, symbol, watchers])
+        for row in rows:
+            writer.writerow(row)
 
 def main():
-    # Step 1: Read symbols
     symbols = read_symbols(SYMBOLS_FILE)
     if not symbols:
         print("No symbols to process. Please check your 'symbols.txt'.")
         return
 
-    # Step 2: Ensure CSV file exists
     ensure_csv(CSV_FILE)
-
-    # Step 3: For each symbol, fetch and log watcher count
+    session = requests.Session()  # Persist cookies and connection
     date_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    for symbol in symbols:
-        watchers, error = fetch_watchlist_count(symbol)
+    results = []
+
+    for idx, symbol in enumerate(symbols):
+        count, error = fetch_watchlist_count(session, symbol)
         if error:
             print(f"[{date_str}] {symbol}: ERROR - {error}")
             continue
-        append_to_csv(CSV_FILE, date_str, symbol, watchers)
-        print(f"[{date_str}] {symbol}: {watchers}")
+        results.append([date_str, symbol, count])
+        print(f"[{date_str}] {symbol}: {count}")
+        if idx < len(symbols) - 1:
+            sleep_time = random.uniform(MIN_SLEEP, MAX_SLEEP)
+            print(f"Sleeping {sleep_time:.2f} seconds before next symbol...")
+            time.sleep(sleep_time)
+
+    if results:
+        append_many_to_csv(CSV_FILE, results)
+        print(f"Appended {len(results)} rows to {CSV_FILE}")
 
 if __name__ == "__main__":
     main()
