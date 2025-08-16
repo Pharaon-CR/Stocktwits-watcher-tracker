@@ -1,0 +1,25 @@
+# List your stock symbols here, one per line.
+# Lines starting with # are ignored.
+ENLV
+IOBT
+BTAI
+IMRX
+ANTX
+HUMA
+IOVA
+NRSN
+AZTR
+BIVI
+AYTU
+TNXP
+KALA
+CADL
+INTS
+LGVN
+CERO
+VERU
+IXHL
+GUTS
+LRMR
+INBX
+COX
