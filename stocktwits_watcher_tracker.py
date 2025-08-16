@@ -39,6 +39,19 @@ API_URL_TEMPLATE = "https://api.stocktwits.com/api/2/streams/symbol/{symbol}.jso
 MAX_RETRIES = 5
 RETRY_WAIT = 15  # seconds to wait on rate-limit or server error
 
+# Headers to mimic a real browser (helps bypass basic anti-bot checks)
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/115.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://stocktwits.com/",
+    "Connection": "keep-alive",
+}
+
 def read_symbols(symbols_file):
     """Read stock symbols from a file, ignoring comments and blank lines."""
     symbols = []
@@ -62,10 +75,15 @@ def fetch_watchlist_count(symbol):
     url = API_URL_TEMPLATE.format(symbol=symbol)
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.get(url, timeout=10)
+            resp = requests.get(url, timeout=10, headers=HEADERS)
             if resp.status_code == 429:
                 # Rate limited
                 print(f"Rate limited on {symbol}. Waiting {RETRY_WAIT} seconds and retrying ({attempt}/{MAX_RETRIES})...")
+                time.sleep(RETRY_WAIT)
+                continue
+            elif resp.status_code == 403:
+                # Forbidden, possibly blocked by anti-bot
+                print(f"HTTP 403 Forbidden for {symbol}. Possible anti-bot block. Waiting {RETRY_WAIT} seconds and retrying ({attempt}/{MAX_RETRIES})...")
                 time.sleep(RETRY_WAIT)
                 continue
             elif resp.status_code >= 500:
